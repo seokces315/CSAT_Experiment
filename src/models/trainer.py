@@ -3,8 +3,34 @@ from .pooling import mean_pooling
 from tqdm import tqdm
 
 import torch
+import torch.nn as nn
 
 import numpy as np
+
+
+# MSE + MAE Type Loss
+class HuberLoss(nn.Module):
+    # Initializer
+    def __init__(self, delta=1.0):
+        super(HuberLoss, self).__init__()
+        self.delta = delta
+
+    def forward(self, preds, targets):
+        assert preds.shape == targets.shape
+
+        # Define the values of abs_error, delta
+        delta = torch.tensor(self.delta, dtype=preds.dtype, device=preds.device)
+        abs_error = (preds - targets).abs()
+
+        # Flag
+        is_small_error = abs_error <= delta
+
+        # Compute & Select loss
+        small_error_loss = 0.5 * (abs_error**2)
+        large_error_loss = delta * (abs_error - 0.5 * delta)
+        loss = torch.where(is_small_error, small_error_loss, large_error_loss)
+
+        return loss.mean()
 
 
 # Function to get embeddings from pre-trained model
