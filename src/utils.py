@@ -19,3 +19,12 @@ def set_seed(seed):
     # Option
     if hasattr(torch, "use_deterministic_algorithm"):
         torch.use_deterministic_algorithms(True)
+
+
+# Checking hardware's capability
+def is_bf16_supported():
+    if not torch.cuda.is_available():
+        return False
+
+    cuda_capability, _ = torch.cuda.get_device_capability()
+    return cuda_capability >= 8

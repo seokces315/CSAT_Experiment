@@ -7,9 +7,9 @@ from transformers import logging
 logging.set_verbosity_error()
 
 from parser import parse_args
-from utils import set_seed
+from utils import set_seed, is_bf16_supported
 from data import load_data, CSATDataset
-from models.model import load_model
+from models.model import EmbeddingProcessor, load_model
 from models.trainer import get_embeddings
 from models.metrics import (
     eval_with_reg_ML,
@@ -33,7 +33,7 @@ from functools import partial
 
 
 # Function for custom collate with dynamic padding
-def collate_fn(batch, tokenizer, task_type):
+def collate_fn(batch, tokenizer, bf16_flag, task_type):
     # None sample filtering
     batch = [item for item in batch if item is not None]
     texts = [item["text"] for item in batch]
@@ -47,6 +47,11 @@ def collate_fn(batch, tokenizer, task_type):
         return_tensors="pt",
     )
 
+    if bf16_flag:
+        texts = {k: v.to(dtype=torch.bfloat16) for k, v in encoded_texts.items()}
+    else:
+        texts = encoded_texts
+
     labels = (
         torch.tensor(labels, dtype=torch.float)
         if task_type == "reg"
@@ -54,8 +59,8 @@ def collate_fn(batch, tokenizer, task_type):
     )
 
     return {
-        "input_ids": encoded_texts["input_ids"],
-        "attention_mask": encoded_texts["attention_mask"],
+        "input_ids": texts["input_ids"],
+        "attention_mask": texts["attention_mask"],
         "labels": labels,
     }
 
@@ -86,33 +91,48 @@ def main(args):
     csat_test_dataset = CSATDataset(df=csat_test_df, task_type=args.task_type)
 
     # Load Model & tokenizer
+    bf16_flag = is_bf16_supported()
+    tokenizer, model = None, None
     if args.model_id == "qwen":
-        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-0.6B")
-        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-4B")
-        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-8B")
+        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-0.6B", bf16_flag=bf16_flag)
+        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-4B", bf16_flag=bf16_flag)
+        # tokenizer, model = load_model("Qwen/Qwen3-Embedding-8B", bf16_flag=bf16_flag)
         pass
     elif args.model_id == "jin":
-        # tokenizer, model = load_model("jinaai/jina-embeddings-v3")
-        # tokenizer, model = load_model("jinaai/jina-embeddings-v4")
+        # tokenizer, model = load_model("jinaai/jina-embeddings-v3", bf16_flag=bf16_flag)
+        # tokenizer, model = load_model("jinaai/jina-embeddings-v4", bf16_flag=bf16_flag)
         pass
     elif args.model_id == "kbb":
-        tokenizer, model = load_model("monologg/kobigbird-bert-base")
+        tokenizer, model = load_model(
+            "monologg/kobigbird-bert-base", bf16_flag=bf16_flag
+        )
     elif args.model_id == "krl":
-        tokenizer, model = load_model("vaiv/kobigbird-roberta-large")
-    model = model.to(device)
+        tokenizer, model = load_model(
+            "vaiv/kobigbird-roberta-large", bf16_flag=bf16_flag
+        )
 
     # Prepare dataloader
     train_dataloader = DataLoader(
         csat_train_dataset,
         args.batch_size,
         shuffle=True,
-        collate_fn=partial(collate_fn, tokenizer=tokenizer, task_type=args.task_type),
+        collate_fn=partial(
+            collate_fn,
+            tokenizer=tokenizer,
+            bf16_flag=bf16_flag,
+            task_type=args.task_type,
+        ),
     )
     test_dataloader = DataLoader(
         csat_test_dataset,
         args.batch_size,
         shuffle=False,
-        collate_fn=partial(collate_fn, tokenizer=tokenizer, task_type=args.task_type),
+        collate_fn=partial(
+            collate_fn,
+            tokenizer=tokenizer,
+            bf16_flag=bf16_flag,
+            task_type=args.task_type,
+        ),
     )
 
     # Define ML models
@@ -135,6 +155,7 @@ def main(args):
     metric_list = list()
     name_list = list()
     if args.train_flag == 0:
+        model = model.to(device)
         X_train, y_train = get_embeddings(
             model, train_dataloader, device, pool_type=args.pool_type
         )
@@ -156,7 +177,23 @@ def main(args):
                 metric_list.append(metrics)
                 name_list.append(name)
     else:
-        pass
+        task_model = EmbeddingProcessor(
+            args.task_type,
+            model,
+            args.freeze_flag,
+            args.fc_type,
+            args.pool_r,
+        )
+        """
+        pool_r,
+        pooling_type,
+        net_r,
+        m,
+        alpha,
+        processor_type,
+        dropout,
+        num_targets,
+        """
 
     # Print result
     if args.task_type == "reg":

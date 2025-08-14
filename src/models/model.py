@@ -7,6 +7,7 @@ from .pooling import (
     ChannelDependentAttentionPooling,
 )
 from .trainer import HuberLoss
+from ..utils import is_bf16_supported
 
 import torch
 import torch.nn as nn
@@ -64,7 +65,7 @@ class GatedGELUHead(nn.Module):
     def __init__(self, hidden_size, out_dim, dropout, m=2, alpha=0.5):
         super(GatedGELUHead, self).__init__()
         gated_dim = hidden_size * m
-        self.alpha = nn.Parameter(torch.tensor(alpha, dtype=torch.float32))
+        self.alpha = nn.Parameter(torch.tensor(alpha))
         self.norm = nn.LayerNorm(hidden_size)
         self.fc_g = nn.Linear(hidden_size, gated_dim, bias=False)  # Gate
         self.fc_h = nn.Linear(hidden_size, gated_dim, bias=False)  # Value
@@ -91,13 +92,13 @@ class GatedGELUHead(nn.Module):
 
 
 # Embedding Model + Regressor/Classifier
-class KoBigBirdProcessor(nn.Module):
+class EmbeddingProcessor(nn.Module):
     # Initializer
     def __init__(
         self,
         task_type,
         embedding_model,
-        fFlag,
+        freeze_flag,
         fc_type,
         pool_r,
         pooling_type,
@@ -108,15 +109,15 @@ class KoBigBirdProcessor(nn.Module):
         dropout,
         num_targets,
     ):
-        super(KoBigBirdProcessor, self).__init__()
+        super(EmbeddingProcessor, self).__init__()
 
         self.task_type = task_type
         self.embedding_model = embedding_model
         self.hidden_dim = self.embedding_model.config.hidden_size
-        self.fFlag = fFlag
+        self.freeze_flag = freeze_flag
 
         # Freeze or Not
-        if self.fFlag is True:
+        if self.freeze_flag is True:
             for param in self.embedding_model.parameters():
                 param.requires_grad = False
             self.embedding_model.eval()
@@ -168,7 +169,7 @@ class KoBigBirdProcessor(nn.Module):
 
     def forward(self, **input_dicts):
         # Backbone inferencing
-        if self.fFlag is True:
+        if self.freeze_flag is True:
             with torch.no_grad():
                 outputs = self.embedding_model(**input_dicts)
         else:
@@ -200,14 +201,31 @@ class KoBigBirdProcessor(nn.Module):
 
 
 # Function to load tokenizer & model
-def load_model(model_id):
+def load_model(model_id, bf16_flag):
     # Prepare tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # Load model
-    model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
+    # Define dtype based on hardware's capability
+    torch_dtype = torch.bfloat16 if bf16_flag else torch.float32
+
+    # TODO : Flash Attention
+
+    # TODO : Quantization Config
+
+    # Load model with options
+    model = AutoModel.from_pretrained(
+        model_id,
+        torch_dtype=torch_dtype,
+        device_map={"", 0},
+        trust_remote_code=True,
+    )
+
+    # # Additional configs
+    # model.config.use_cache = False
+    # model.config.pretraining_tp = 1
+    # model.gradient_checkpointing_enable()
 
     return tokenizer, model
