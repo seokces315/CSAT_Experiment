@@ -7,7 +7,6 @@ from .pooling import (
     ChannelDependentAttentionPooling,
 )
 from .trainer import HuberLoss
-from ..utils import is_bf16_supported
 
 import torch
 import torch.nn as nn
@@ -96,8 +95,8 @@ class EmbeddingProcessor(nn.Module):
     # Initializer
     def __init__(
         self,
-        task_type,
         embedding_model,
+        task_type,
         freeze_flag,
         fc_type,
         pool_r,
@@ -111,9 +110,9 @@ class EmbeddingProcessor(nn.Module):
     ):
         super(EmbeddingProcessor, self).__init__()
 
-        self.task_type = task_type
         self.embedding_model = embedding_model
         self.hidden_dim = self.embedding_model.config.hidden_size
+        self.task_type = task_type
         self.freeze_flag = freeze_flag
 
         # Freeze or Not

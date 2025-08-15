@@ -6,17 +6,26 @@ from transformers import logging
 
 logging.set_verbosity_error()
 
+import wandb
+
+wandb.init(project="CSAT_Experiment")
+
 from parser import parse_args
 from utils import set_seed, is_bf16_supported
 from data import load_data, CSATDataset
 from models.model import EmbeddingProcessor, load_model
-from models.trainer import get_embeddings
+from models.trainer import collate_fn, wrap_collate_fn, get_embeddings
 from models.metrics import (
+    reg_metrics,
+    cls_metrics,
     eval_with_reg_ML,
     eval_with_cls_ML,
     print_reg_result,
     print_cls_result,
 )
+
+import os
+import json
 
 import torch
 
@@ -29,40 +38,9 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 
+from transformers import TrainingArguments, Trainer, EarlyStoppingCallback
+
 from functools import partial
-
-
-# Function for custom collate with dynamic padding
-def collate_fn(batch, tokenizer, bf16_flag, task_type):
-    # None sample filtering
-    batch = [item for item in batch if item is not None]
-    texts = [item["text"] for item in batch]
-    labels = [item["label"] for item in batch]
-
-    encoded_texts = tokenizer(
-        texts,
-        padding="longest",
-        truncation=True,
-        max_length=2048,
-        return_tensors="pt",
-    )
-
-    if bf16_flag:
-        texts = {k: v.to(dtype=torch.bfloat16) for k, v in encoded_texts.items()}
-    else:
-        texts = encoded_texts
-
-    labels = (
-        torch.tensor(labels, dtype=torch.float)
-        if task_type == "reg"
-        else torch.tensor(labels, dtype=torch.long)
-    )
-
-    return {
-        "input_ids": texts["input_ids"],
-        "attention_mask": texts["attention_mask"],
-        "labels": labels,
-    }
 
 
 # Main flow
@@ -77,18 +55,6 @@ def main(args):
     # Load data
     data_path = f"../data/{args.dataset}"
     csat_kor_df = load_data(data_path=data_path)
-
-    # Split data into train & test splits
-    csat_train_df, csat_test_df = train_test_split(
-        csat_kor_df,
-        test_size=args.test_size,
-        random_state=args.seed,
-        stratify=csat_kor_df["difficulty"],
-    )
-
-    # Define CSAT korean dataset
-    csat_train_dataset = CSATDataset(df=csat_train_df, task_type=args.task_type)
-    csat_test_dataset = CSATDataset(df=csat_test_df, task_type=args.task_type)
 
     # Load Model & tokenizer
     bf16_flag = is_bf16_supported()
@@ -111,51 +77,63 @@ def main(args):
             "vaiv/kobigbird-roberta-large", bf16_flag=bf16_flag
         )
 
-    # Prepare dataloader
-    train_dataloader = DataLoader(
-        csat_train_dataset,
-        args.batch_size,
-        shuffle=True,
-        collate_fn=partial(
-            collate_fn,
-            tokenizer=tokenizer,
-            bf16_flag=bf16_flag,
-            task_type=args.task_type,
-        ),
-    )
-    test_dataloader = DataLoader(
-        csat_test_dataset,
-        args.batch_size,
-        shuffle=False,
-        collate_fn=partial(
-            collate_fn,
-            tokenizer=tokenizer,
-            bf16_flag=bf16_flag,
-            task_type=args.task_type,
-        ),
-    )
-
-    # Define ML models
-    reg_model_dict = {
-        "Ridge": Ridge(random_state=args.seed),
-        "SVR": SVR(verbose=0),
-        "RandomForest": RandomForestRegressor(random_state=args.seed, verbose=0),
-        "XGBoost": XGBRegressor(random_state=args.seed, verbose=0),
-        "LightGBM": LGBMRegressor(random_state=args.seed, verbose=-1),
-    }
-    cls_model_dict = {
-        "Ridge": RidgeClassifier(random_state=args.seed),
-        "SVC": SVC(random_state=args.seed, verbose=0),
-        "RandomForest": RandomForestClassifier(random_state=args.seed, verbose=0),
-        "XGBoost": XGBClassifier(random_state=args.seed, verbose=0),
-        "LightGBM": LGBMClassifier(random_state=args.seed, verbose=-1),
-    }
-
     # Training or Inferencing directly
     metric_list = list()
     name_list = list()
     if args.train_flag == 0:
         model = model.to(device)
+
+        # Define ML models
+        reg_model_dict = {
+            "Ridge": Ridge(random_state=args.seed),
+            "SVR": SVR(verbose=0),
+            "RandomForest": RandomForestRegressor(random_state=args.seed, verbose=0),
+            "XGBoost": XGBRegressor(random_state=args.seed, verbose=0),
+            "LightGBM": LGBMRegressor(random_state=args.seed, verbose=-1),
+        }
+        cls_model_dict = {
+            "Ridge": RidgeClassifier(random_state=args.seed),
+            "SVC": SVC(random_state=args.seed, verbose=0),
+            "RandomForest": RandomForestClassifier(random_state=args.seed, verbose=0),
+            "XGBoost": XGBClassifier(random_state=args.seed, verbose=0),
+            "LightGBM": LGBMClassifier(random_state=args.seed, verbose=-1),
+        }
+
+        # Split data into train & test splits
+        csat_train_df, csat_test_df = train_test_split(
+            csat_kor_df,
+            test_size=args.test_size,
+            random_state=args.seed,
+            stratify=csat_kor_df["difficulty"],
+        )
+
+        # Define CSAT korean dataset
+        csat_train_dataset = CSATDataset(df=csat_train_df, task_type=args.task_type)
+        csat_test_dataset = CSATDataset(df=csat_test_df, task_type=args.task_type)
+
+        # Prepare dataloader
+        train_dataloader = DataLoader(
+            csat_train_dataset,
+            args.batch_size,
+            shuffle=True,
+            collate_fn=partial(
+                collate_fn,
+                tokenizer=tokenizer,
+                task_type=args.task_type,
+            ),
+        )
+        test_dataloader = DataLoader(
+            csat_test_dataset,
+            args.batch_size,
+            shuffle=False,
+            collate_fn=partial(
+                collate_fn,
+                tokenizer=tokenizer,
+                task_type=args.task_type,
+            ),
+        )
+
+        # Get embeddings to be used in ML training/testing
         X_train, y_train = get_embeddings(
             model, train_dataloader, device, pool_type=args.pool_type
         )
@@ -176,30 +154,115 @@ def main(args):
                 metrics = eval_with_cls_ML(train_set, test_set, model)
                 metric_list.append(metrics)
                 name_list.append(name)
+
+        # Print results
+        if args.task_type == "reg":
+            print_reg_result(metric_list, name_list)
+        else:
+            print_cls_result(metric_list, name_list)
+
     else:
+        num_targets = 1 if args.task_type == "reg" else 3
         task_model = EmbeddingProcessor(
-            args.task_type,
             model,
+            args.task_type,
             args.freeze_flag,
             args.fc_type,
             args.pool_r,
+            args.pool_type,
+            args.net_r,
+            args.m,
+            args.alpha,
+            args.processor_type,
+            args.dropout,
+            num_targets,
         )
-        """
-        pool_r,
-        pooling_type,
-        net_r,
-        m,
-        alpha,
-        processor_type,
-        dropout,
-        num_targets,
-        """
+        task_model = task_model.to(device)
 
-    # Print result
-    if args.task_type == "reg":
-        print_reg_result(metric_list, name_list)
-    else:
-        print_cls_result(metric_list, name_list)
+        # Split data into train & test splits
+        csat_train_df, csat_test_df = train_test_split(
+            csat_kor_df,
+            test_size=args.test_size,
+            random_state=args.seed,
+            stratify=csat_kor_df["difficulty"],
+        )
+
+        csat_eval_df, csat_test_df = train_test_split(
+            csat_test_df,
+            test_size=0.5,
+            random_state=args.seed,
+            stratify=csat_test_df["difficulty"],
+        )
+
+        # Define CSAT korean dataset
+        csat_train_dataset = CSATDataset(df=csat_train_df, task_type=args.task_type)
+        csat_eval_dataset = CSATDataset(df=csat_eval_df, task_type=args.task_type)
+        csat_test_dataset = CSATDataset(df=csat_test_df, task_type=args.task_type)
+
+        # Define training arguments
+        greater_is_better = False if args.task_type == "reg" else True
+        metric_for_best_model = (
+            "eval_mae" if args.task_type == "reg" else "eval_accuracy"
+        )
+        training_args = TrainingArguments(
+            output_dir="./output",
+            data_seed=args.seed,
+            per_device_train_batch_size=args.batch_size,
+            per_device_eval_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.cum_step,
+            num_train_epochs=args.epoch,
+            learning_rate=args.lr_rate,
+            lr_scheduler_type=args.lr_type,
+            optim=args.optim,
+            logging_strategy="steps",
+            logging_steps=50,
+            evaluation_strategy="steps",
+            eval_steps=50,
+            save_strategy="steps",
+            save_steps=50,
+            save_total_limit=1,
+            remove_unused_columns=False,
+            dataloader_drop_last=True,
+            disable_tqdm=False,
+            full_determinism=True,
+            load_best_model_at_end=True,
+            greater_is_better=greater_is_better,
+            metric_for_best_model=metric_for_best_model,
+            run_name="CSAT_Experiment",
+            report_to="wandb",
+        )
+
+        # Define trainer for training
+        data_collator = wrap_collate_fn(tokenizer=tokenizer, task_type=args.task_type)
+        compute_metrics = reg_metrics if args.task_type == "reg" else cls_metrics
+        trainer = Trainer(
+            model=task_model,
+            args=training_args,
+            data_collator=data_collator,
+            train_dataset=csat_train_dataset,
+            eval_dataset=csat_eval_dataset,
+            compute_metrics=compute_metrics,
+            callbacks=[
+                EarlyStoppingCallback(
+                    early_stopping_patience=5, early_stopping_threshold=1e-3
+                )
+            ],
+        )
+
+        # Train process
+        trainer.train()
+
+        # Test process
+        test_metrics = trainer.evaluate(eval_dataset=csat_test_dataset)
+
+        # Save results
+        save_path = os.path.join(
+            "./res",
+            f"{args.model_id}_{args.task_type}_{args.pool_type}_{args.processor_type}_test_metrics.json",
+        )
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(test_metrics, f, indent=4, ensure_ascii=False)
 
 
 if __name__ == "__main__":

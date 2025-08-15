@@ -33,6 +33,65 @@ class HuberLoss(nn.Module):
         return loss.mean()
 
 
+# Function for custom collate with dynamic padding
+def collate_fn(batch, tokenizer, task_type):
+    # None sample filtering
+    batch = [item for item in batch if item is not None]
+    texts = [item["text"] for item in batch]
+    labels = [item["label"] for item in batch]
+
+    encoded_texts = tokenizer(
+        texts,
+        padding="longest",
+        truncation=True,
+        max_length=2048,
+        return_tensors="pt",
+    )
+
+    labels = (
+        torch.tensor(labels, dtype=torch.float)
+        if task_type == "reg"
+        else torch.tensor(labels, dtype=torch.long)
+    )
+
+    return {
+        "input_ids": encoded_texts["input_ids"],
+        "attention_mask": encoded_texts["attention_mask"],
+        "labels": labels,
+    }
+
+
+# Wrapping function for HuggingFace Trainer
+def wrap_collate_fn(tokenizer, task_type):
+    def collate_fn_(batch):
+        # None sample filtering
+        batch = [item for item in batch if item is not None]
+        texts = [item["texts"] for item in batch]
+        labels = [item["labels"] for item in batch]
+
+        encoded_texts = tokenizer(
+            texts,
+            padding="longest",
+            truncation=True,
+            max_length=2048,
+            return_tensors="pt",
+        )
+
+        labels = (
+            torch.tensor(labels, dtype=torch.float)
+            if task_type == "reg"
+            else torch.tensor(labels, dtype=torch.long)
+        )
+
+        return {
+            "input_ids": encoded_texts["input_ids"],
+            "attention_mask": encoded_texts["attention_mask"],
+            "labels": labels,
+        }
+
+    return collate_fn_
+
+
 # Function to get embeddings from pre-trained model
 def get_embeddings(embedding_model, dataloader, device, pool_type):
     # Local vars

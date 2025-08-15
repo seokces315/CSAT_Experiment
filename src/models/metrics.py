@@ -19,6 +19,81 @@ import numpy as np
 import pandas as pd
 
 
+# Function to compute regression metrics for HuggingFace Trainer
+def reg_metrics(eval_pred):
+    # Unpacking
+    preds, labels = eval_pred
+
+    # Dimension control
+    preds = preds.squeeze()
+    labels = labels.squeeze()
+
+    # Metrics
+    mse = mean_squared_error(labels, preds)
+    rmse = root_mean_squared_error(labels, preds)
+    mae = mean_absolute_error(labels, preds)
+    mape = mean_absolute_percentage_error(labels, preds) * 100
+    r2 = r2_score(labels, preds)
+
+    correct_05 = np.sum(np.abs(labels - preds) <= 0.05)
+    correct_10 = np.sum(np.abs(labels - preds) <= 0.10)
+    correct_15 = np.sum(np.abs(labels - preds) <= 0.15)
+    n_sets = labels.shape[0]
+
+    accuracy_05 = correct_05 / n_sets
+    accuracy_10 = correct_10 / n_sets
+    accuracy_15 = correct_15 / n_sets
+
+    metrics = {
+        "mse": mse,
+        "rmse": rmse,
+        "mae": mae,
+        "mape": mape,
+        "r2": r2,
+        "accuracy_05": accuracy_05,
+        "accuracy_10": accuracy_10,
+        "accuracy_15": accuracy_15,
+    }
+
+    return metrics
+
+
+# Function to compute classification metrics for HuggingFace Trainer
+def cls_metrics(eval_pred):
+    # Unpacking
+    logits, labels = eval_pred
+    preds = logits.argmax(axis=-1)
+
+    # Dimension control
+    preds = preds.squeeze()
+    labels = labels.squeeze()
+
+    # Metrics
+    accuracy = accuracy_score(labels, preds)
+    precision_macro = precision_score(labels, preds, average="macro")
+    precision_weighted = precision_score(labels, preds, average="weighted")
+    recall_macro = recall_score(labels, preds, average="macro")
+    recall_weighted = recall_score(labels, preds, average="weighted")
+    f1_macro = f1_score(labels, preds, average="macro")
+    f1_weighted = f1_score(labels, preds, average="weighted")
+
+    # cm = confusion_matrix(labels, preds)
+    # report_dict = classification_report(labels, preds, output_dict=True)
+    # report_df = pd.DataFrame(report_dict).transpose()
+
+    metrics = {
+        "accuracy": accuracy,
+        "precision_macro": precision_macro,
+        "precision_weighted": precision_weighted,
+        "recall_macro": recall_macro,
+        "recall_weighted": recall_weighted,
+        "f1_macro": f1_macro,
+        "f1_weighted": f1_weighted,
+    }
+
+    return metrics
+
+
 # Function to evaluate regression task with ML models
 def eval_with_reg_ML(train_set, test_set, model):
     # Unpacking
